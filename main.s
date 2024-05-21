@@ -50,10 +50,7 @@
 .include "delaymacro.s"
 
 sprites                     = $200          ; OAM page
-INIT_FINE_DELAY = 1                         ; Initial value for HBlank fine-tune delay. Allowed range: 0 <= INIT_FINE_DELAY <= 3
 SCAN_ACC_ADD    = 171                       ; NTSC: 0.666 fractional cycles / scanline -> 256 * 0.666 ~= 171
-PSNT_ADDRESS    = $2C00                     ; PPU memory address for PSNT
-PSNT_DST_ROW    = 24                        ; Destination row in PSNT
 
 .zeropage
 paletteCache:                   .res 25         ; Entire palette, excluding mirror registers
@@ -61,27 +58,12 @@ ScrollX:                        .res 1          ; Background scroll X
 ScrollY:                        .res 1          ; Background scroll Y
 ScrollY_t:                      .res 1          ; Background scroll Y (temporary variable incremented by raster code)
 scanAcc:                        .res 1          ; Scanline accumulator used to emulate fractional cycles
-numLines:                       .res 1
 tmp:                            .res 2
-fineDelay:                      .res 1          ; HBlank fine-tuning delay
 frameCounter:                   .res 1
-tmpB:                           .res 2
 delayMacroVar:                  .res 1
-x2001_enableOrDisableMask:      .res 1          ; $2001 render mask for reg X in HBlank code
-palRewriteIndex:                .res 1          ; Palette index to rewrite mid-frame
-palRewriteValue:                .res 1          ; Palette value to rewrite mid-frame
-palRewriteScanline:             .res 1          ; Desired scanline to execute palette rewrite
-palRewriteScanlineAdjusted:     .res 1          ; Adjusted scanline, to make sure fine-y = 3 or 7
 r2001:                          .res 1          ; $2001 value
-psntDstAddr:                    .res 2          ; Stores destination of where row is copied into "palette shadow nametable"
-psntDstAddrAT:                  .res 2          ; Same for row's attribute data
-psntSrcRow:                     .res 1          ; Row index in source (ROM) nametable
 joy:
 joy0:                           .res 1
-joy1:                           .res 1
-joyP:
-joyP0:                          .res 1
-joyP1:                          .res 1
 backdropColorTableIndex:        .res 1
 zeroByte:                       .res 1
 backdropTablePtr:               .res 2
@@ -127,16 +109,6 @@ JOY_RIGHT   = %10000000
     lda paletteCache+1+3*i+2
     sta $2007
 .endrep
-.ENDMACRO
-
-;
-; Sets X / Y of a single sprite
-;
-.MACRO SET_SPRITE spriteIndex, spriteX, spriteY
-    lda spriteX
-    sta sprites+spriteIndex*4+3
-    lda spriteY
-    sta sprites+spriteIndex*4+0
 .ENDMACRO
 
 ; Writes all 12 hues to palette, with preset brightness
@@ -338,9 +310,6 @@ reset:
 :
     lda $2002
     bpl :-
-    ; Setup delay
-    lda #INIT_FINE_DELAY
-    sta fineDelay
     lda #$00
     sta ScrollX
     ; Clear nametables
@@ -355,20 +324,6 @@ reset:
     ; Enable sprites / BG in leftmost column
     lda #$1E
     sta r2001
-    ; Start off with changing BG0 to a bright green
-    lda #$2A
-    sta palRewriteValue
-    lda #$00
-    sta palRewriteIndex
-    ; Initialise PPU addresses for PSNT
-    lda #<(PSNT_ADDRESS + 32 * PSNT_DST_ROW)
-    sta psntDstAddr
-    lda #>(PSNT_ADDRESS + 32 * PSNT_DST_ROW)
-    sta psntDstAddr+1
-    lda #<(PSNT_ADDRESS + $3C0 + (PSNT_DST_ROW / 4)*8)
-    sta psntDstAddrAT
-    lda #>(PSNT_ADDRESS + $3C0 + (PSNT_DST_ROW / 4)*8)
-    sta psntDstAddrAT+1
     lda #0
     sta ScrollY
     ; Synchronize to PPU and enable NMI
@@ -554,52 +509,9 @@ UpdateState:
     inc frameCounter
     rts
 
-.align $100
-;
-; Delays by fineDelay cycles + 
-;
-DelayByXPlus36:
-    cpx #0
-    bne :+
-    ; 0 + 36 = 36
-    DELAY 12
-    rts
-:
-    dex
-    bne :+
-    ; 1 + 36 = 37
-    DELAY 8
-    rts
-:
-    dex
-    bne :+
-    ; 2 + 36 = 38
-    DELAY 4
-    rts
-:
-    dex
-    bne :+
-    ; 3 + 36 = 39
-    rts
-:
-; Should never happen unless constant out-of-range - do endless loop if so
-:
-    jmp :-
-
 ; Freeze program if this somehow gets triggered, rather
 ; than silently messing up timing
 irq:    jmp irq
-
-.align 256
-R2006TabX:
-.repeat 256,i
-.byte ((i & $FF)>>3) & $1F
-.endrep
-
-R2006BTabY:
-.repeat 256,i
-.byte ((i>>3)<<5) & $FF
-.endrep
 
 ClearNameTables:
     lda #$20
@@ -645,48 +557,6 @@ UploadCHR:
     inc @ChrPtr+1
     dex
     bne :-
-    rts
-
-UploadSpriteCHR:
-    @ChrPtr = tmp
-    lda #$00
-    sta $2006
-    lda #$00
-    sta $2006
-    lda #>SpriteTileData
-    sta @ChrPtr+1
-    lda #<SpriteTileData
-    sta @ChrPtr
-    ;
-    ldx #64
-@tileLoop:
-    ldy #0
-@byteLoopP0:
-    lda (@ChrPtr),y
-    sta $2007
-    iny
-    cpy #8
-    bne @byteLoopP0
-    ldy #0
-@byteLoopP1:
-    lda (@ChrPtr),y
-    and #$F0
-    sta tmpB
-    lda #$FF
-    eor tmpB
-    sta $2007
-    iny
-    cpy #8
-    bne @byteLoopP1
-    lda @ChrPtr
-    clc
-    adc #16
-    sta @ChrPtr
-    lda @ChrPtr+1
-    adc #0
-    sta @ChrPtr+1
-    dex
-    bne @tileLoop
     rts
 
 UploadNameTable:
@@ -780,18 +650,6 @@ SetScanlineAccumulator:
     lda #0 ;#(256-SCAN_ACC_ADD)
     sta scanAcc
     rts
-
-;
-; Table to use for de-glitching fine-X writes performed during rendering
-;
-.align $100
-xFineHiByteTab:
-.repeat 256,i
-    .byte (i & 7) | $20
-.endrep
-
-SpriteTileData:
-.incbin "numbers.chr", $0000, $400
 
 .segment "HEADER"
     .byte "NES",26, 1,0, $E0 + %00001000, $10 ; 16K PRG, 8K CHR, Mapper30
